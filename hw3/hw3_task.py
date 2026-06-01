@@ -262,7 +262,7 @@ class Scheduler:
             return None
 
     def _schedule_prefill(self) -> Batch:
-        batch = Batch(is_prefill=True)
+        batch = Batch(phase=BatchPhase.PREFILL)
         budget = self.token_budget
 
         # Step A
@@ -295,12 +295,12 @@ class Scheduler:
             matched_blocks = []
             if self.enable_prefix_caching:
                 handle = self.cache_manager.match_prefix(req.prompt_tokens)
-                if handle.matched_len > 0:
+                if handle.num_matched_tokens > 0:
                     self.cache_manager.lock(handle)
                     req.cache_handle = handle
                     matched_blocks = handle.matched_blocks
-                    req.prefix_tokens_saved = handle.matched_len
-                    req.num_computed_tokens = handle.matched_len
+                    req.prefix_tokens_saved = handle.num_matched_tokens
+                    req.num_computed_tokens = handle.num_matched_tokens
                     remaining = len(req.prompt_tokens) - req.num_computed_tokens
                     chunk = min(remaining, self.prefill_chunk, budget)
 
@@ -331,7 +331,7 @@ class Scheduler:
         return batch
 
     def _schedule_decode(self) -> Batch:
-        batch = Batch(is_prefill=False)
+        batch = Batch(phase=BatchPhase.DECODE)
         for req in list(self.running):
             if req.is_prefilling:
                 continue
