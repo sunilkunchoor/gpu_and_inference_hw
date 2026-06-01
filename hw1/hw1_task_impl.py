@@ -122,17 +122,17 @@ def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, va
 # Q1. Look at the compiled element-wise operations from `1 ops` through `64 ops`.
 # Why does performance rise as arithmetic intensity increases even though the
 # measured runtime changes only a little?
-# A1: The kernel is severely memory-bandwidth bound. Doing extra arithmetic costs almost no extra time because the GPU is waiting on memory anyway. Therefore, more FLOPs in the same time gives higher FLOP/s.
+# A1: The kernel is severely memory-bandwidth bound. The runtime stays flat at ~0.21ms for 1 through 64 ops because the GPU is entirely bottlenecked by reading from and writing to global memory (achieving ~2.5 TB/s). Doing extra arithmetic in registers costs no extra time, so calculating more FLOPs in the same 0.21ms time frame gives a proportionally higher FLOP/s rate.
 #
 # Q2. In one sample run, `matmul 1024x1024` achieved lower FLOP/s than the
 # `128 ops` compiled element-wise operation. Give one or two reasons why that can
 # happen on a large GPU like an H100.
-# A2: The problem size (1024x1024) may be too small to fully saturate the massive number of Streaming Multiprocessors on an H100. A highly parallel fused pointwise op, however, can perfectly saturate all compute units without complex shared memory or tiling bottlenecks.
+# A2: The `matmul 1024x1024` operation achieved 32.5 TFLOP/s (0.065ms) compared to 53.1 TFLOP/s for the 128 ops pointwise kernel. Reasons: 1) The 1024x1024 problem size is too small to provide enough work to fully saturate the massive number of Streaming Multiprocessors on an H100. 2) The extremely short execution time (0.065ms) means kernel launch and scheduling overheads become a significant fraction of the measured time.
 #
 # Q3. Between `64 ops` and `128 ops`, runtime increases more noticeably than it
 # did for smaller operations. What does that suggest about what resource is
 # becoming the bottleneck?
-# A3: It suggests the kernel is transitioning from being memory-bound to being compute-bound. We are hitting the arithmetic roof, so extra FLOPs now take extra time.
+# A3: The runtime jumps from 0.21ms (64 ops) to 0.32ms (128 ops). This suggests the kernel is transitioning from being memory-bandwidth bound to being compute-bound. We are hitting the arithmetic roof of the GPU for this instruction mix, so adding extra FLOPs now requires extra compute time.
 #
 # Q4. Why do the eager `ops-K` points look so different from the compiled ones?
-# A4: Eager mode launches separate kernels for each multiply and add, causing a massive amount of intermediate memory traffic (and kernel launch overhead). Torch.compile fuses everything into a single kernel, doing the arithmetic in fast registers and avoiding the memory bottlenecks.
+# A4: The eager mode points show runtime increasing linearly (from 0.71ms at 1 op to 67.4ms at 128 ops) and FLOP/s staying flat at ~250 GFLOP/s. Eager mode launches separate kernels for each multiply and add, causing massive intermediate memory traffic to global memory and repeated kernel launch overheads. Torch.compile fuses these into a single kernel, keeping the data in fast registers.
