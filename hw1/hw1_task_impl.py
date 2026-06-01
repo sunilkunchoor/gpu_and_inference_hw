@@ -12,8 +12,7 @@ import torch
 
 def lowest_ai_fn(x: torch.Tensor) -> torch.Tensor:
     """Lowest arithmetic intensity baseline (0 FLOP/Byte)."""
-    # TODO (1 line): implement a lowest-AI op
-    pass
+    return x.clone()
 
 
 # TASK 1b: Implement a function with configurable arithmetic intensity.
@@ -37,10 +36,12 @@ def make_compute_fn(num_ops: int, compiled: bool = True):
     """Return an eager or compiled function whose work scales with num_ops."""
 
     def fn(x: torch.Tensor) -> torch.Tensor:
-        pass
+        acc = x.clone()
+        for _ in range(num_ops):
+            acc = acc * x + x
+        return acc
 
-    # TODO (1 line): return either `fn` or `torch.compile(fn)` based on `compiled`
-    pass
+    return torch.compile(fn) if compiled else fn
 
 
 # ============================================================================
@@ -62,8 +63,18 @@ def benchmark_fn(fn, *args, warmup=25, rep=100) -> float:
         fn(*args)
     torch.cuda.synchronize()
 
-    # TODO: time `rep` runs using CUDA events and return median latency (ms)
-    pass
+    times = []
+    for _ in range(rep):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        fn(*args)
+        end.record()
+        torch.cuda.synchronize()
+        times.append(start.elapsed_time(end))
+    
+    times.sort()
+    return times[rep // 2]
 
 
 # TASK 3: Compute element-wise operation metrics from measured runtime.
@@ -83,8 +94,23 @@ def benchmark_fn(fn, *args, warmup=25, rep=100) -> float:
 
 
 def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, variant):
-    # TODO: compute total FLOPs, arithmetic intensity, and achieved FLOP/s
-    pass
+    # Total FLOPs: 2 FLOPs per iteration (multiply and add)
+    total_flops = num_elements * num_ops * 2
+
+    if variant == "compiled":
+        # Fused: read x once, write acc once
+        total_bytes = 2 * num_elements * bytes_per_element
+    else:
+        # Eager: acc = acc * x + x
+        # x.clone() => 1 read, 1 write
+        # loop: t = acc * x (2 reads, 1 write)
+        #       acc = t + x (2 reads, 1 write)
+        # Total per loop = 6 accesses
+        total_bytes = (2 + 6 * num_ops) * num_elements * bytes_per_element
+
+    ai = total_flops / total_bytes if total_bytes > 0 else 0.0
+    achieved_flops = total_flops / (ms / 1000.0) if ms > 0 else 0.0
+
     return total_flops, ai, achieved_flops
 
 
@@ -96,13 +122,17 @@ def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, va
 # Q1. Look at the compiled element-wise operations from `1 ops` through `64 ops`.
 # Why does performance rise as arithmetic intensity increases even though the
 # measured runtime changes only a little?
+# A1: The kernel is severely memory-bandwidth bound. Doing extra arithmetic costs almost no extra time because the GPU is waiting on memory anyway. Therefore, more FLOPs in the same time gives higher FLOP/s.
 #
 # Q2. In one sample run, `matmul 1024x1024` achieved lower FLOP/s than the
 # `128 ops` compiled element-wise operation. Give one or two reasons why that can
 # happen on a large GPU like an H100.
+# A2: The problem size (1024x1024) may be too small to fully saturate the massive number of Streaming Multiprocessors on an H100. A highly parallel fused pointwise op, however, can perfectly saturate all compute units without complex shared memory or tiling bottlenecks.
 #
 # Q3. Between `64 ops` and `128 ops`, runtime increases more noticeably than it
 # did for smaller operations. What does that suggest about what resource is
 # becoming the bottleneck?
+# A3: It suggests the kernel is transitioning from being memory-bound to being compute-bound. We are hitting the arithmetic roof, so extra FLOPs now take extra time.
 #
 # Q4. Why do the eager `ops-K` points look so different from the compiled ones?
+# A4: Eager mode launches separate kernels for each multiply and add, causing a massive amount of intermediate memory traffic (and kernel launch overhead). Torch.compile fuses everything into a single kernel, doing the arithmetic in fast registers and avoiding the memory bottlenecks.
